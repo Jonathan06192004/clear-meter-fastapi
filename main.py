@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import os
@@ -11,16 +12,25 @@ load_dotenv()
 
 app = FastAPI()
 
-# Create tables if not exist
+# ✅ Enable CORS for browser and external API tools like Hoppscotch/Postman
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # You can restrict later to your backend URL for security
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ✅ Create tables if not exist (FastAPI bridge DB)
 Base.metadata.create_all(bind=engine)
 
-# Environment variable for Node backend URL
+# ✅ Environment variable for Node backend URL
 BACKEND_URL = os.getenv(
     "BACKEND_URL",
     "https://aquameter-backend.onrender.com/api/water-readings"
 )
 
-# Request payload schema
+# ✅ Request payload schema
 class WaterReadingPayload(BaseModel):
     user_id: int
     device_id: int
