@@ -22,14 +22,14 @@ NODE_BACKEND_URL = os.getenv(
 class WaterReadingPayload(BaseModel):
     user_id: int
     device_id: int
-    reading_5digit: int
+    reading_5digit: int  # local IoT-style reading (5-digit format)
 
 @app.post("/bridge/send-reading")
 def send_reading(payload: WaterReadingPayload):
     db: Session = SessionLocal()
 
     try:
-        # Log locally
+        # 1️⃣ Save locally in FastAPI bridge
         reading = WaterReading(
             user_id=payload.user_id,
             device_id=payload.device_id,
@@ -39,18 +39,35 @@ def send_reading(payload: WaterReadingPayload):
         db.commit()
         db.refresh(reading)
 
-        # Forward to Node backend
+        # 2️⃣ Prepare payload for Node backend (matches backend route fields)
+        node_payload = {
+            "user_id": payload.user_id,
+            "device_id": payload.device_id,
+            "reading_value": payload.reading_5digit  # Node expects this key
+        }
+
+        # 3️⃣ Forward to Node backend
         response = requests.post(
             NODE_BACKEND_URL,
-            json=payload.model_dump(),
+            json=node_payload,
             timeout=10
         )
 
+        # 4️⃣ Return result summary
         return {
             "status": "success",
             "local_id": reading.id,
             "forward_to_node": True,
+            "backend_status": response.status_code,
             "backend_response": response.json()
+        }
+
+    except requests.exceptions.RequestException as req_err:
+        db.rollback()
+        return {
+            "status": "error",
+            "message": f"Failed to reach Node backend: {str(req_err)}",
+            "local_only": True
         }
 
     except Exception as e:
@@ -62,4 +79,4 @@ def send_reading(payload: WaterReadingPayload):
 
 @app.get("/")
 def root():
-    return {"status": "FastAPI Bridge Online"}
+    return {"status": "FastAPI Bridge Online", "forward_url": NODE_BACKEND_URL}
