@@ -5,43 +5,39 @@ import requests
 import os
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine, Base
+from database import SessionLocal
 from models import WaterReading
 
 load_dotenv()
 
 app = FastAPI()
 
-# ✅ Enable CORS for browser and external API tools like Hoppscotch/Postman
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can restrict later to your backend URL for security
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Create tables if not exist (FastAPI bridge DB)
-Base.metadata.create_all(bind=engine)
-
-# ✅ Environment variable for Node backend URL
+# Environment variable for Node backend URL
 BACKEND_URL = os.getenv(
     "BACKEND_URL",
     "https://aquameter-backend.onrender.com/api/water-readings"
 )
 
-# ✅ Request payload schema
+# Request payload schema
 class WaterReadingPayload(BaseModel):
     user_id: int
     device_id: int
-    reading_5digit: int  # from IoT or simulated device
+    reading_5digit: int
 
 @app.post("/bridge/send-reading")
 def send_reading(payload: WaterReadingPayload):
     db: Session = SessionLocal()
-
     try:
-        # 1️⃣ Save locally in FastAPI bridge database
+        # Save reading directly to PostgreSQL
         reading = WaterReading(
             user_id=payload.user_id,
             device_id=payload.device_id,
@@ -51,24 +47,18 @@ def send_reading(payload: WaterReadingPayload):
         db.commit()
         db.refresh(reading)
 
-        # 2️⃣ Prepare payload for Node backend (matching backend field names)
+        # Forward same data to Node backend
         node_payload = {
             "user_id": payload.user_id,
             "device_id": payload.device_id,
             "reading_5digit": payload.reading_5digit
         }
 
-        # 3️⃣ Send to Node backend
-        response = requests.post(
-            BACKEND_URL,
-            json=node_payload,
-            timeout=10
-        )
+        response = requests.post(BACKEND_URL, json=node_payload, timeout=5)
 
-        # 4️⃣ Return results
         return {
             "status": "success",
-            "local_id": reading.id,
+            "local_id": reading.reading_id,
             "forward_to_node": True,
             "backend_status": response.status_code,
             "backend_response": response.json()
