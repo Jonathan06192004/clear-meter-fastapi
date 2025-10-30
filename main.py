@@ -14,22 +14,24 @@ app = FastAPI()
 # Create tables if not exist
 Base.metadata.create_all(bind=engine)
 
-NODE_BACKEND_URL = os.getenv(
-    "NODE_BACKEND_URL",
+# Environment variable for Node backend URL
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
     "https://aquameter-backend.onrender.com/api/water-readings"
 )
 
+# Request payload schema
 class WaterReadingPayload(BaseModel):
     user_id: int
     device_id: int
-    reading_5digit: int  # local IoT-style reading (5-digit format)
+    reading_5digit: int  # from IoT or simulated device
 
 @app.post("/bridge/send-reading")
 def send_reading(payload: WaterReadingPayload):
     db: Session = SessionLocal()
 
     try:
-        # 1️⃣ Save locally in FastAPI bridge
+        # 1️⃣ Save locally in FastAPI bridge database
         reading = WaterReading(
             user_id=payload.user_id,
             device_id=payload.device_id,
@@ -39,21 +41,21 @@ def send_reading(payload: WaterReadingPayload):
         db.commit()
         db.refresh(reading)
 
-        # 2️⃣ Prepare payload for Node backend (matches backend route fields)
+        # 2️⃣ Prepare payload for Node backend (matching backend field names)
         node_payload = {
             "user_id": payload.user_id,
             "device_id": payload.device_id,
-            "reading_value": payload.reading_5digit  # Node expects this key
+            "reading_5digit": payload.reading_5digit
         }
 
-        # 3️⃣ Forward to Node backend
+        # 3️⃣ Send to Node backend
         response = requests.post(
-            NODE_BACKEND_URL,
+            BACKEND_URL,
             json=node_payload,
             timeout=10
         )
 
-        # 4️⃣ Return result summary
+        # 4️⃣ Return results
         return {
             "status": "success",
             "local_id": reading.id,
@@ -79,4 +81,4 @@ def send_reading(payload: WaterReadingPayload):
 
 @app.get("/")
 def root():
-    return {"status": "FastAPI Bridge Online", "forward_url": NODE_BACKEND_URL}
+    return {"status": "FastAPI Bridge Online", "forward_url": BACKEND_URL}
