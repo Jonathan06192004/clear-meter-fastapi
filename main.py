@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from database import SessionLocal
 from models import WaterReading
-from fcm_service import send_push_notification  # ✅ Import FCM notification helper
+from fcm_service import send_push_notification  # ✅ Import FCM helper
 
 load_dotenv()
 
-app = FastAPI(title="AquaMeter FastAPI Bridge", version="1.0")
+app = FastAPI(title="AquaMeter FastAPI Bridge", version="1.1")
 
 # =======================
 # CORS Configuration
@@ -41,9 +41,11 @@ class WaterReadingPayload(BaseModel):
     device_id: int
     reading_5digit: int
 
+
 class TokenPayload(BaseModel):
     user_id: int
-    fcm_token: str
+    expo_token: str | None = None
+    fcm_token: str | None = None
 
 
 # =======================
@@ -62,7 +64,7 @@ def send_reading(payload: WaterReadingPayload):
         db.commit()
         db.refresh(reading)
 
-        # Forward same reading to Node backend
+        # Forward to Node backend
         node_payload = {
             "user_id": payload.user_id,
             "device_id": payload.device_id,
@@ -96,22 +98,28 @@ def send_reading(payload: WaterReadingPayload):
 
 
 # =======================
-# ROUTE 2: Save FCM Token from app
+# ROUTE 2: Save Expo + FCM Token
 # =======================
 @app.post("/save_token")
-def save_fcm_token(data: TokenPayload):
+def save_tokens(data: TokenPayload):
     db: Session = SessionLocal()
     try:
-        # ✅ Wrap SQL in text() to fix the SQLAlchemy 2.x error
         query = text("""
-            INSERT INTO user_tokens (user_id, fcm_token)
-            VALUES (:uid, :token)
+            INSERT INTO user_tokens (user_id, expo_token, fcm_token)
+            VALUES (:uid, :expo, :fcm)
             ON CONFLICT (user_id)
-            DO UPDATE SET fcm_token = EXCLUDED.fcm_token;
+            DO UPDATE SET
+                expo_token = COALESCE(EXCLUDED.expo_token, user_tokens.expo_token),
+                fcm_token = COALESCE(EXCLUDED.fcm_token, user_tokens.fcm_token);
         """)
 
-        db.execute(query, {"uid": data.user_id, "token": data.fcm_token})
+        db.execute(query, {
+            "uid": data.user_id,
+            "expo": data.expo_token,
+            "fcm": data.fcm_token
+        })
         db.commit()
+
         return {"status": "saved", "user_id": data.user_id}
 
     except Exception as e:
@@ -123,7 +131,7 @@ def save_fcm_token(data: TokenPayload):
 
 
 # =======================
-# ROUTE 3: Check abnormal consumption + send alerts
+# ROUTE 3: Check abnormal consumption + send FCM Alerts
 # =======================
 @app.post("/check_consumption")
 def check_consumption(background_tasks: BackgroundTasks):
@@ -131,7 +139,7 @@ def check_consumption(background_tasks: BackgroundTasks):
     try:
         avg_consumption = db.query(func.avg(WaterReading.consumption)).scalar() or 0
 
-        # Find abnormal readings (greater than 150% of average)
+        # Find abnormal readings (>150% of average)
         abnormal_readings = db.query(WaterReading).filter(
             WaterReading.consumption > avg_consumption * 1.5
         ).all()
