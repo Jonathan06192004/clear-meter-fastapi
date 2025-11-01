@@ -12,7 +12,7 @@ from fcm_service import send_push_notification  # ✅ Import FCM helper
 
 load_dotenv()
 
-app = FastAPI(title="AquaMeter FastAPI Bridge", version="1.1")
+app = FastAPI(title="AquaMeter FastAPI Bridge", version="1.2")
 
 # =======================
 # CORS Configuration
@@ -48,6 +48,12 @@ class TokenPayload(BaseModel):
     fcm_token: str | None = None
 
 
+class NotificationPayload(BaseModel):
+    user_id: int
+    title: str
+    message: str
+
+
 # =======================
 # ROUTE 1: Bridge readings to backend
 # =======================
@@ -64,7 +70,6 @@ def send_reading(payload: WaterReadingPayload):
         db.commit()
         db.refresh(reading)
 
-        # Forward to Node backend
         node_payload = {
             "user_id": payload.user_id,
             "device_id": payload.device_id,
@@ -131,7 +136,39 @@ def save_tokens(data: TokenPayload):
 
 
 # =======================
-# ROUTE 3: Check abnormal consumption + send FCM Alerts
+# ROUTE 3: Manual Notification Test Endpoint (for Hoppscotch)
+# =======================
+@app.post("/send_notification")
+def send_notification(payload: NotificationPayload):
+    db: Session = SessionLocal()
+    try:
+        token_row = db.execute(
+            text("SELECT fcm_token FROM user_tokens WHERE user_id = :uid"),
+            {"uid": payload.user_id}
+        ).fetchone()
+
+        if not token_row or not token_row[0]:
+            return {"error": "No FCM token found for this user"}
+
+        fcm_token = token_row[0]
+        success = send_push_notification(fcm_token, payload.title, payload.message)
+
+        return {
+            "status": "sent" if success else "failed",
+            "user_id": payload.user_id,
+            "title": payload.title,
+            "message": payload.message
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    finally:
+        db.close()
+
+
+# =======================
+# ROUTE 4: Check abnormal consumption + send FCM Alerts
 # =======================
 @app.post("/check_consumption")
 def check_consumption(background_tasks: BackgroundTasks):
@@ -139,7 +176,6 @@ def check_consumption(background_tasks: BackgroundTasks):
     try:
         avg_consumption = db.query(func.avg(WaterReading.consumption)).scalar() or 0
 
-        # Find abnormal readings (>150% of average)
         abnormal_readings = db.query(WaterReading).filter(
             WaterReading.consumption > avg_consumption * 1.5
         ).all()
@@ -170,7 +206,7 @@ def check_consumption(background_tasks: BackgroundTasks):
 
 
 # =======================
-# ROUTE 4: Health Check
+# ROUTE 5: Health Check
 # =======================
 @app.get("/")
 def root():
