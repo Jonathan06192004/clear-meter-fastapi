@@ -34,7 +34,7 @@ BACKEND_URL = os.getenv(
 )
 
 # =======================
-# Pydantic Schemas
+# Schemas
 # =======================
 class WaterReadingPayload(BaseModel):
     user_id: int
@@ -48,19 +48,25 @@ class TokenPayload(BaseModel):
     fcm_token: str | None = None
 
 
-class NotificationPayload(BaseModel):
-    user_id: int
-    title: str
-    message: str
-
-
 # =======================
-# ROUTE 1: Bridge readings to backend
+# ROUTE 1: Bridge readings + Notify on increase
 # =======================
 @app.post("/bridge/send-reading")
-def send_reading(payload: WaterReadingPayload):
+def send_reading(payload: WaterReadingPayload, background_tasks: BackgroundTasks):
     db: Session = SessionLocal()
     try:
+        # ✅ Get the last reading for this device
+        last_reading = (
+            db.query(WaterReading)
+            .filter(WaterReading.device_id == payload.device_id)
+            .order_by(WaterReading.timestamp.desc())
+            .first()
+        )
+
+        previous_value = last_reading.reading_5digit if last_reading else 0
+        increased = payload.reading_5digit > previous_value
+
+        # ✅ Save new reading locally
         reading = WaterReading(
             user_id=payload.user_id,
             device_id=payload.device_id,
@@ -70,28 +76,39 @@ def send_reading(payload: WaterReadingPayload):
         db.commit()
         db.refresh(reading)
 
+        # ✅ Forward to Node backend
         node_payload = {
             "user_id": payload.user_id,
             "device_id": payload.device_id,
             "reading_5digit": payload.reading_5digit
         }
+        try:
+            response = requests.post(BACKEND_URL, json=node_payload, timeout=5)
+        except requests.exceptions.RequestException:
+            response = None
 
-        response = requests.post(BACKEND_URL, json=node_payload, timeout=5)
+        # ✅ Notify if consumption increased
+        if increased:
+            token_row = db.execute(
+                text("SELECT fcm_token FROM user_tokens WHERE user_id = :uid"),
+                {"uid": payload.user_id}
+            ).fetchone()
+
+            if token_row and token_row[0]:
+                background_tasks.add_task(
+                    send_push_notification,
+                    token_row[0],
+                    "🚰 Water Consumption Increased",
+                    f"Your water consumption has increased from {previous_value} to {payload.reading_5digit}. Please check your recent usage."
+                )
 
         return {
             "status": "success",
             "local_id": reading.reading_id,
-            "forward_to_node": True,
-            "backend_status": response.status_code,
-            "backend_response": response.json()
-        }
-
-    except requests.exceptions.RequestException as req_err:
-        db.rollback()
-        return {
-            "status": "error",
-            "message": f"Failed to reach Node backend: {str(req_err)}",
-            "local_only": True
+            "previous_value": previous_value,
+            "increased": increased,
+            "notified": increased,
+            "backend_status": response.status_code if response else "offline"
         }
 
     except Exception as e:
@@ -136,46 +153,13 @@ def save_tokens(data: TokenPayload):
 
 
 # =======================
-# ROUTE 3: Manual Notification Test Endpoint (for Hoppscotch)
-# =======================
-@app.post("/send_notification")
-def send_notification(payload: NotificationPayload):
-    db: Session = SessionLocal()
-    try:
-        token_row = db.execute(
-            text("SELECT fcm_token FROM user_tokens WHERE user_id = :uid"),
-            {"uid": payload.user_id}
-        ).fetchone()
-
-        if not token_row or not token_row[0]:
-            return {"error": "No FCM token found for this user"}
-
-        fcm_token = token_row[0]
-        success = send_push_notification(fcm_token, payload.title, payload.message)
-
-        return {
-            "status": "sent" if success else "failed",
-            "user_id": payload.user_id,
-            "title": payload.title,
-            "message": payload.message
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-    finally:
-        db.close()
-
-
-# =======================
-# ROUTE 4: Check abnormal consumption + send FCM Alerts
+# ROUTE 3: Manual Check (Optional)
 # =======================
 @app.post("/check_consumption")
 def check_consumption(background_tasks: BackgroundTasks):
     db: Session = SessionLocal()
     try:
         avg_consumption = db.query(func.avg(WaterReading.consumption)).scalar() or 0
-
         abnormal_readings = db.query(WaterReading).filter(
             WaterReading.consumption > avg_consumption * 1.5
         ).all()
@@ -191,8 +175,8 @@ def check_consumption(background_tasks: BackgroundTasks):
                 background_tasks.add_task(
                     send_push_notification,
                     token_row[0],
-                    "High Water Usage Alert 💧",
-                    f"Your water usage today is significantly higher than usual (Reading ID: {reading.reading_id})."
+                    "⚠️ High Water Usage Alert",
+                    f"Your water usage is higher than usual. Reading ID: {reading.reading_id}"
                 )
                 sent_count += 1
 
@@ -206,7 +190,7 @@ def check_consumption(background_tasks: BackgroundTasks):
 
 
 # =======================
-# ROUTE 5: Health Check
+# ROUTE 4: Health Check
 # =======================
 @app.get("/")
 def root():
