@@ -5,7 +5,7 @@ import requests
 import os
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from database import SessionLocal
 from models import WaterReading
 from fcm_service import send_push_notification  # ✅ Import FCM notification helper
@@ -102,12 +102,14 @@ def send_reading(payload: WaterReadingPayload):
 def save_fcm_token(data: TokenPayload):
     db: Session = SessionLocal()
     try:
-        query = """
-        INSERT INTO user_tokens (user_id, fcm_token)
-        VALUES (:uid, :token)
-        ON CONFLICT (user_id)
-        DO UPDATE SET fcm_token = EXCLUDED.fcm_token;
-        """
+        # ✅ Wrap SQL in text() to fix the SQLAlchemy 2.x error
+        query = text("""
+            INSERT INTO user_tokens (user_id, fcm_token)
+            VALUES (:uid, :token)
+            ON CONFLICT (user_id)
+            DO UPDATE SET fcm_token = EXCLUDED.fcm_token;
+        """)
+
         db.execute(query, {"uid": data.user_id, "token": data.fcm_token})
         db.commit()
         return {"status": "saved", "user_id": data.user_id}
@@ -137,7 +139,7 @@ def check_consumption(background_tasks: BackgroundTasks):
         sent_count = 0
         for reading in abnormal_readings:
             token_row = db.execute(
-                "SELECT fcm_token FROM user_tokens WHERE user_id = :uid",
+                text("SELECT fcm_token FROM user_tokens WHERE user_id = :uid"),
                 {"uid": reading.user_id}
             ).fetchone()
 
