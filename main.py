@@ -30,7 +30,7 @@ app.add_middleware(
 # =======================
 BACKEND_URL = os.getenv(
     "BACKEND_URL",
-    "https://aquameter-backend.onrender.com/api/water-readings"
+    "https://aquameter-backend-8u1x.onrender.com/api/water-readings"
 )
 
 # =======================

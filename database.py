@@ -8,7 +8,7 @@ load_dotenv()
 # Use your exact PostgreSQL URL from Render
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://aquameter_user:q0JSnRKWQlpJrgHlKostKPTOXN9Rz0xp@dpg-d3ht4abuibrs73b6qkgg-a.singapore-postgres.render.com/aquameter"
+    "postgresql://aquameter_user:J2cpNXQznZllOKRSvXv5GGtxQYuzgA3z@dpg-d44qseuuk2gs73fl9e8g-a.singapore-postgres.render.com/aquameter_3fag"
 )
 
 engine = create_engine(DATABASE_URL)
