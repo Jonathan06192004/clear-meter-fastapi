@@ -30,9 +30,8 @@ app.add_middleware(
 # =======================
 BACKEND_URL = os.getenv(
     "BACKEND_URL",
-    "https://aquameter-backend-8u1x.onrender.com/api/water-readings"
+    "https://clear-meter-fastapi-8z5e.onrender.com/api/water-readings"
 )
-
 # =======================
 # Schemas
 # =======================
