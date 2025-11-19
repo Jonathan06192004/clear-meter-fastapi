@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from database import SessionLocal
 from models import WaterReading
-from fcm_service import send_push_notification  # ✅ Import FCM helper
+from fcm_service import send_push_notification
 
 load_dotenv()
 
-app = FastAPI(title="AquaMeter FastAPI Bridge", version="1.2")
+app = FastAPI(title="AquaMeter FastAPI Bridge", version="1.3")
 
 # =======================
 # CORS Configuration
@@ -32,32 +32,41 @@ BACKEND_URL = os.getenv(
     "BACKEND_URL",
     "https://clear-meter-fastapi-8z5e.onrender.com/api/water-readings"
 )
+
 # =======================
 # Schemas
 # =======================
-class WaterReadingPayload(BaseModel):
-    user_id: int
-    device_id: int
+class DeviceReadingPayload(BaseModel):
+    device_serial: str
     reading_5digit: int
-
 
 class TokenPayload(BaseModel):
     user_id: int
     expo_token: str | None = None
     fcm_token: str | None = None
 
-
 # =======================
-# ROUTE 1: Bridge readings + Notify on increase
+# ROUTE 1: Bridge readings from Raspberry Pi
 # =======================
 @app.post("/bridge/send-reading")
-def send_reading(payload: WaterReadingPayload, background_tasks: BackgroundTasks):
+def send_reading(payload: DeviceReadingPayload, background_tasks: BackgroundTasks):
     db: Session = SessionLocal()
     try:
-        # ✅ Get the last reading for this device
+        # ✅ Lookup device by serial
+        device_row = db.execute(
+            text("SELECT device_id, user_id FROM smart_device WHERE device_serial = :serial"),
+            {"serial": payload.device_serial}
+        ).fetchone()
+
+        if not device_row:
+            return {"status": "error", "message": "Device not found"}
+
+        device_id, user_id = device_row
+
+        # ✅ Get last reading for this device
         last_reading = (
             db.query(WaterReading)
-            .filter(WaterReading.device_id == payload.device_id)
+            .filter(WaterReading.device_id == device_id)
             .order_by(WaterReading.timestamp.desc())
             .first()
         )
@@ -67,18 +76,18 @@ def send_reading(payload: WaterReadingPayload, background_tasks: BackgroundTasks
 
         # ✅ Save new reading locally
         reading = WaterReading(
-            user_id=payload.user_id,
-            device_id=payload.device_id,
+            user_id=user_id,
+            device_id=device_id,
             reading_5digit=payload.reading_5digit
         )
         db.add(reading)
         db.commit()
         db.refresh(reading)
 
-        # ✅ Forward to Node backend
+        # ✅ Forward to Node.js backend
         node_payload = {
-            "user_id": payload.user_id,
-            "device_id": payload.device_id,
+            "user_id": user_id,
+            "device_id": device_id,
             "reading_5digit": payload.reading_5digit
         }
         try:
@@ -90,15 +99,14 @@ def send_reading(payload: WaterReadingPayload, background_tasks: BackgroundTasks
         if increased:
             token_row = db.execute(
                 text("SELECT fcm_token FROM user_tokens WHERE user_id = :uid"),
-                {"uid": payload.user_id}
+                {"uid": user_id}
             ).fetchone()
-
             if token_row and token_row[0]:
                 background_tasks.add_task(
                     send_push_notification,
                     token_row[0],
                     "🚰 Water Consumption Increased",
-                    f"Your water consumption has increased from {previous_value} to {payload.reading_5digit}. Please check your recent usage."
+                    f"Your water consumption has increased from {previous_value} to {payload.reading_5digit}. Please check your usage."
                 )
 
         return {
@@ -116,7 +124,6 @@ def send_reading(payload: WaterReadingPayload, background_tasks: BackgroundTasks
 
     finally:
         db.close()
-
 
 # =======================
 # ROUTE 2: Save Expo + FCM Token
@@ -149,7 +156,6 @@ def save_tokens(data: TokenPayload):
 
     finally:
         db.close()
-
 
 # =======================
 # ROUTE 3: Manual Check (Optional)
@@ -186,7 +192,6 @@ def check_consumption(background_tasks: BackgroundTasks):
 
     finally:
         db.close()
-
 
 # =======================
 # ROUTE 4: Health Check
