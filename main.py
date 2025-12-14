@@ -40,7 +40,7 @@ BACKEND_URL = os.getenv(
 # =======================
 class DeviceReadingPayload(BaseModel):
     device_serial: str
-    reading_5digit: int
+    reading_5digit: str
 
 
 class TokenPayload(BaseModel):
@@ -102,7 +102,11 @@ def send_reading(payload: DeviceReadingPayload, background_tasks: BackgroundTask
 
         device_id, user_id = device_row
 
-        # 📌 Last reading
+        # 🔢 RAW + INT VALUES
+        raw_value = payload.reading_5digit.strip()     # "00541"
+        current_value = int(raw_value)                 # 541
+
+        # 📌 Last reading (numeric comparison)
         last_reading = (
             db.query(WaterReading)
             .filter(WaterReading.device_id == device_id)
@@ -110,23 +114,28 @@ def send_reading(payload: DeviceReadingPayload, background_tasks: BackgroundTask
             .first()
         )
 
-        previous_value = last_reading.reading_5digit if last_reading else 0
-        current_value = payload.reading_5digit
+        previous_value = (
+            int(last_reading.reading_5digit)
+            if last_reading else 0
+        )
 
-        # 🔓 RAW MODE: allow everything
         new_consumption = current_value - previous_value
 
+        # ⚠️ OCR jitter protection
         if new_consumption < 0:
             print(
                 f"⚠️ OCR jitter allowed | prev={previous_value} curr={current_value}"
             )
-            new_consumption = 0  # prevent billing / alerts issues
+            new_consumption = 0
 
-        # 💾 SAVE EVERY READING
+        # 💾 SAVE EXACT OCR VALUE
         reading = WaterReading(
             user_id=user_id,
             device_id=device_id,
-            reading_5digit=current_value
+            reading_5digit=raw_value,   # ✅ STORED AS "00541"
+            previous_reading=previous_value,
+            current_reading=current_value,
+            consumption=new_consumption
         )
 
         db.add(reading)
@@ -134,7 +143,7 @@ def send_reading(payload: DeviceReadingPayload, background_tasks: BackgroundTask
         db.refresh(reading)
 
         # ----------------------------------
-        # 🔔 High Usage Alert (SAFE MODE)
+        # 🔔 High Usage Alert
         # ----------------------------------
         avg_daily = get_daily_consumption_average(db, user_id)
 
@@ -161,7 +170,7 @@ def send_reading(payload: DeviceReadingPayload, background_tasks: BackgroundTask
                 json={
                     "user_id": user_id,
                     "device_id": device_id,
-                    "reading_5digit": current_value
+                    "reading_5digit": raw_value  # ✅ KEEP STRING
                 },
                 timeout=5
             )
@@ -172,6 +181,7 @@ def send_reading(payload: DeviceReadingPayload, background_tasks: BackgroundTask
         return {
             "status": "success",
             "reading_id": reading.reading_id,
+            "raw": raw_value,
             "previous": previous_value,
             "current": current_value,
             "delta": new_consumption,
